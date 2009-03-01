@@ -32,16 +32,22 @@ const int BAR_RANGE[] =
     "alsa_output.pci_8086_3a3e_sound_card_0_alsa_playback_0.monitor"
 #define IMON_DEV "/dev/lcd0"
 
+struct imon_display {
+    char data[2][16];
+};
+
 struct fft_context {
     float *input;
     float *output;
     fftwf_plan plan;
 };
 
-char imon_char(float level, int row) {
-    const char bars[2][16] = {
-        {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7},
-        {0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7}};
+void imon_update(struct imon_display *display, float level, int bar) {
+    const char bar_chars[2][16] = {
+        {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+         0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7},
+        {0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
+         0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7}};
     int i = (int)((level/BAR_MAX) * 16);
 
     if (i < 0)
@@ -49,7 +55,8 @@ char imon_char(float level, int row) {
     else if (i >= 16)
         i = 15;
 
-    return bars[row][i];
+    display->data[0][bar] = bar_chars[0][i];
+    display->data[1][bar] = bar_chars[1][i];
 }
 
 void fft_init(struct fft_context *context)
@@ -72,7 +79,7 @@ void fft_free(struct fft_context *context)
     fftwf_free(context->output);
 }
 
-void fft_compute(struct fft_context *context, char display[2][BAR_COUNT])
+void fft_compute(struct fft_context *context, struct imon_display *display)
 {
     /* Apply a Hamming window to focus on the center of this data set */
     for (int i = 0; i < BUF_SAMPLES; i++)
@@ -90,8 +97,7 @@ void fft_compute(struct fft_context *context, char display[2][BAR_COUNT])
                 max = mag;
         }
 
-        display[0][i] = imon_char(max, 0);
-        display[1][i] = imon_char(max, 1);
+        imon_update(display, max, i);
     }
 }
 
@@ -121,16 +127,16 @@ int main(int argc, char * argv[])
     }
 
     for (;;) {
-        char display[2][16];
+        struct imon_display display;
 
         if (pa_simple_read(pulse, context.input, BUF_SIZE, &error) < 0) {
             fprintf(stderr, "pa_simple_read() failed: %s\n", pa_strerror(error));
             goto finish;
         }
 
-        fft_compute(&context, display);
+        fft_compute(&context, &display);
 
-        if (write(imon, display, sizeof(display)) < 0) {
+        if (write(imon, &display, sizeof(display)) < 0) {
             fprintf(stderr, "write() failed: %s\n", strerror(errno));
             goto finish;
         }
