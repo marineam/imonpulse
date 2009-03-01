@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -27,27 +28,67 @@
 const int BAR_RANGE[] =
     {1, 2, 3, 4, 6, 9, 13, 21, 32, 49, 76, 117, 181, 279, 431, 664, 1024};
 
+const char BAR_CHARS[2][16] = {
+    {' ',' ',' ',' ',' ',' ',' ',' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7},
+    {0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7}};
+
 /* TODO: auto-detect this */
 #define PULSE_DEV \
     "alsa_output.pci_8086_3a3e_sound_card_0_alsa_playback_0.monitor"
 #define IMON_DEV "/dev/lcd0"
 
 struct imon_display {
-    char data[2][16];
-};
+    /* imon worker thread control */
+    pthread_mutex_t worker_waiting;
+    int worker_done;
 
-struct fft_context {
+    /* imon frame buffer and device */
+    char lcd_buffer[2][BAR_COUNT];
+    int lcd_fd;
+
+    /* fft buffers */
     float *input;
     float *output;
     fftwf_plan plan;
 };
 
-void imon_update(struct imon_display *display, float level, int bar) {
-    const char bar_chars[2][16] = {
-        {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-         0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7},
-        {0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
-         0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7, 0x7}};
+static int imon_init(struct imon_display *display)
+{
+    pthread_mutex_init(&display->worker_waiting, NULL);
+    display->worker_done = 0;
+
+    /* fftw_malloc ensures that the buffers are properly aligned for SSE */
+    display->input = fftwf_malloc(BUF_SIZE);
+    display->output = fftwf_malloc(BUF_SIZE);
+    assert(display->input && display->output);
+
+    /* The data will be returned in half complex format (see fftw docs) */
+    display->plan = fftwf_plan_r2r_1d(BUF_SAMPLES,
+            display->input, display->output,
+            FFTW_R2HC, FFTW_MEASURE);
+
+    if ((display->lcd_fd = open(IMON_DEV, O_WRONLY)) < 0) {
+        fprintf(stderr, "LCD init failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+static void imon_free(struct imon_display *display)
+{
+    pthread_mutex_destroy(&display->worker_waiting);
+
+    fftwf_destroy_plan(display->plan);
+    fftwf_free(display->input);
+    fftwf_free(display->output);
+
+    if (display->lcd_fd)
+        close(display->lcd_fd);
+}
+
+static void imon_update_bar(struct imon_display *display,
+        float level, int bar) {
     int i = (int)((level/BAR_MAX) * 16);
 
     if (i < 0)
@@ -55,65 +96,70 @@ void imon_update(struct imon_display *display, float level, int bar) {
     else if (i >= 16)
         i = 15;
 
-    display->data[0][bar] = bar_chars[0][i];
-    display->data[1][bar] = bar_chars[1][i];
+    display->lcd_buffer[0][bar] = BAR_CHARS[0][i];
+    display->lcd_buffer[1][bar] = BAR_CHARS[1][i];
 }
 
-void fft_init(struct fft_context *context)
-{
-    /* fftw_malloc ensures that the buffers are properly aligned for SSE */
-    context->input = fftwf_malloc(BUF_SIZE);
-    context->output = fftwf_malloc(BUF_SIZE);
-    assert(context->input && context->output);
-
-    /* The data will be returned in half complex format (see fftw docs) */
-    context->plan = fftwf_plan_r2r_1d(BUF_SAMPLES,
-            context->input, context->output,
-            FFTW_R2HC, FFTW_MEASURE);
-}
-
-void fft_free(struct fft_context *context)
-{
-    fftwf_destroy_plan(context->plan);
-    fftwf_free(context->input);
-    fftwf_free(context->output);
-}
-
-void fft_compute(struct fft_context *context, struct imon_display *display)
+void imon_update(struct imon_display *display)
 {
     /* Apply a Hamming window to focus on the center of this data set */
     for (int i = 0; i < BUF_SAMPLES; i++)
-        context->input[i] *= (0.54 - 0.46 * cosf((2*M_PI*i)/BUF_SAMPLES));
+        display->input[i] *= (0.54 - 0.46 * cosf((2*M_PI*i)/BUF_SAMPLES));
 
-    fftwf_execute(context->plan);
+    fftwf_execute(display->plan);
 
     for (int i = 0; i < BAR_COUNT; i++) {
         float max = 0;
 
         for (int j = BAR_RANGE[i]; j < BAR_RANGE[i+1]; j++) {
-            float mag = sqrt(pow(context->output[j],2) +
-                    pow(context->output[BUF_SAMPLES-j],2));
+            float mag = sqrt(pow(display->output[j],2) +
+                    pow(display->output[BUF_SAMPLES-j],2));
             if (mag > max)
                 max = mag;
         }
 
-        imon_update(display, max, i);
+        imon_update_bar(display, max, i);
     }
+
+    if (write(display->lcd_fd, display->lcd_buffer,
+                sizeof(display->lcd_buffer)) < 0) {
+        fprintf(stderr, "LCD update failed: %s\n", strerror(errno));
+        display->worker_done = 1;
+    }
+}
+
+void* imon_worker(void *data)
+{
+    struct imon_display *display = data;
+
+    while (!display->worker_done) {
+        pthread_mutex_lock(&display->worker_waiting);
+
+        imon_update(display);
+    }
+
+    return NULL;
 }
 
 int main(int argc, char * argv[])
 {
-    int imon, error, ret = 1;
-    pa_simple *pulse;
+    int error, ret = 1;
+    pa_simple *pulse = NULL;
     pa_sample_spec spec;
-    struct fft_context context;
+    struct imon_display display;
+    pthread_t worker;
 
-    fft_init(&context);
+    if (imon_init(&display))
+        goto finish;
 
     /* To make the fft easy get data as mono and in floats */
     spec.format = PA_SAMPLE_FLOAT32NE;
     spec.channels = 1;
     spec.rate = SAMPLE_RATE;
+
+    /* Start up the worker thread */
+    pthread_create(&worker, NULL, imon_worker, &display);
+    pthread_detach(worker);
 
     if (!(pulse = pa_simple_new(NULL, argv[0], PA_STREAM_RECORD, PULSE_DEV,
                     "pretty lcd thingy", &spec, NULL, NULL, &error))) {
@@ -121,34 +167,48 @@ int main(int argc, char * argv[])
         goto finish;
     }
 
-    if ((imon = open(IMON_DEV, O_WRONLY)) < 0) {
-        fprintf(stderr, "open(%s) failed: %s\n", IMON_DEV, strerror(errno));
-        goto finish;
-    }
-
     for (;;) {
-        struct imon_display display;
+        uint8_t buffer[BUF_SIZE];
 
-        if (pa_simple_read(pulse, context.input, BUF_SIZE, &error) < 0) {
-            fprintf(stderr, "pa_simple_read() failed: %s\n", pa_strerror(error));
+        /*
+        pa_usec_t latency;
+
+        if ((latency = pa_simple_get_latency(pulse, &error)) < 0) {
+            fprintf(stderr, "Reading latency failed: %s\n",
+                    pa_strerror(error));
             goto finish;
         }
 
-        fft_compute(&context, &display);
+        printf("%lld\n", latency);
+        */
 
-        if (write(imon, &display, sizeof(display)) < 0) {
-            fprintf(stderr, "write() failed: %s\n", strerror(errno));
+        if (pa_simple_read(pulse, &buffer, BUF_SIZE, &error) < 0) {
+            fprintf(stderr, "Reading from Pulse failed: %s\n",
+                    pa_strerror(error));
             goto finish;
         }
+
+        if (pthread_mutex_trylock(&display.worker_waiting) == EBUSY) {
+            /* Worker is waiting, update the input buffer */
+            memcpy(display.input, &buffer, BUF_SIZE);
+        }
+        else {
+            fprintf(stderr, "Skipping update...\n");
+        }
+
+        /* Clear the above lock or signal the worker to start */
+        pthread_mutex_unlock(&display.worker_waiting);
     }
 
     ret = 0;
 
 finish:
-    if (imon)
-        close(imon);
+    display.worker_done = 1;
+
     if (pulse)
         pa_simple_free(pulse);
-    fft_free(&context);
+
+    imon_free(&display);
+
     return ret;
 }

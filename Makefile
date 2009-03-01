@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall -std=gnu99
+CFLAGS=-Wall -O2 -std=gnu99 -pthread
 LIBS=-lpulse-simple -lfftw3f -lm
 
 monitor: monitor.c
