@@ -13,17 +13,17 @@
 
 //#define VERBOSE
 
-/* This buffer should give us about 21 data sets per second
- * and thus a minimum frequency of about 21 Hz. The maximum
+/* This buffer should give us about 10 data sets per second
+ * and thus a minimum frequency of about 10 Hz. The maximum
  * frequency is half the sample rate or about 22 kHz */
 #define SAMPLE_RATE 44100
-#define BUF_SAMPLES 2048
+#define BUF_SAMPLES 4096
 #define BUF_SIZE    (sizeof(float) * BUF_SAMPLES)
 #define BAR_COUNT   16
 #define BAR_MAX     6 // An arbitrary number...
 
 /* This is the frequency range for each graph bar, by fft output index.
- * The actual frequency represented is about 21 times greater. These
+ * The actual frequency represented is about 20 times greater. These
  * were computed with:
  * for (i = 0; i <= 16; i++)
  *     round(1.54221083^i) */
