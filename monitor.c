@@ -11,6 +11,8 @@
 #include <pulse/error.h>
 #include <fftw3.h>
 
+//#define VERBOSE
+
 /* This buffer should give us about 21 data sets per second
  * and thus a minimum frequency of about 21 Hz. The maximum
  * frequency is half the sample rate or about 22 kHz */
@@ -18,7 +20,7 @@
 #define BUF_SAMPLES 2048
 #define BUF_SIZE    (sizeof(float) * BUF_SAMPLES)
 #define BAR_COUNT   16
-#define BAR_MAX     75 // An arbitrary number...
+#define BAR_MAX     6 // An arbitrary number...
 
 /* This is the frequency range for each graph bar, by fft output index.
  * The actual frequency represented is about 21 times greater. These
@@ -43,8 +45,8 @@ struct imon_display {
     int worker_done;
 
     /* imon frame buffer and device */
-    char lcd_buffer[2][BAR_COUNT];
-    int lcd_fd;
+    char lcd_buffer[2][2][BAR_COUNT];
+    int lcd_fd, lcd_flip;
 
     /* fft buffers */
     float *input;
@@ -67,7 +69,9 @@ static int imon_init(struct imon_display *display)
             display->input, display->output,
             FFTW_R2HC, FFTW_MEASURE);
 
-    if ((display->lcd_fd = open(IMON_DEV, O_WRONLY)) < 0) {
+    display->lcd_flip = 0;
+
+    if ((display->lcd_fd = open(IMON_DEV, O_WRONLY|O_NONBLOCK)) < 0) {
         fprintf(stderr, "LCD init failed: %s\n", strerror(errno));
         return -1;
     }
@@ -89,15 +93,15 @@ static void imon_free(struct imon_display *display)
 
 static void imon_update_bar(struct imon_display *display,
         float level, int bar) {
-    int i = (int)((level/BAR_MAX) * 16);
+    int i = (int)((logf(level)/BAR_MAX) * 16);
 
     if (i < 0)
         i = 0;
     else if (i >= 16)
         i = 15;
 
-    display->lcd_buffer[0][bar] = BAR_CHARS[0][i];
-    display->lcd_buffer[1][bar] = BAR_CHARS[1][i];
+    display->lcd_buffer[!!display->lcd_flip][0][bar] = BAR_CHARS[0][i];
+    display->lcd_buffer[!!display->lcd_flip][1][bar] = BAR_CHARS[1][i];
 }
 
 void imon_update(struct imon_display *display)
@@ -121,11 +125,20 @@ void imon_update(struct imon_display *display)
         imon_update_bar(display, max, i);
     }
 
-    if (write(display->lcd_fd, display->lcd_buffer,
-                sizeof(display->lcd_buffer)) < 0) {
-        fprintf(stderr, "LCD update failed: %s\n", strerror(errno));
-        display->worker_done = 1;
+    if (pthread_mutex_trylock(&display->worker_waiting) == EBUSY) {
+        /* Worker is waiting, flip the buffer */
+        display->lcd_flip = !display->lcd_flip;
     }
+#ifdef VERBOSE
+    else {
+        fprintf(stderr, "Skipping update...\n");
+    }
+#endif
+
+    /* Clear the above lock or signal the worker to start */
+    pthread_mutex_unlock(&display->worker_waiting);
+
+
 }
 
 void* imon_worker(void *data)
@@ -135,7 +148,12 @@ void* imon_worker(void *data)
     while (!display->worker_done) {
         pthread_mutex_lock(&display->worker_waiting);
 
-        imon_update(display);
+        if (write(display->lcd_fd,
+                    display->lcd_buffer[!display->lcd_flip],
+                    sizeof(display->lcd_buffer[0])) < 0) {
+            fprintf(stderr, "LCD update failed: %s\n", strerror(errno));
+            display->worker_done = 1;
+        }
     }
 
     return NULL;
@@ -168,9 +186,7 @@ int main(int argc, char * argv[])
     }
 
     for (;;) {
-        uint8_t buffer[BUF_SIZE];
-
-        /*
+#ifdef VERBOSE
         pa_usec_t latency;
 
         if ((latency = pa_simple_get_latency(pulse, &error)) < 0) {
@@ -180,24 +196,18 @@ int main(int argc, char * argv[])
         }
 
         printf("%lld\n", latency);
-        */
+#endif
 
-        if (pa_simple_read(pulse, &buffer, BUF_SIZE, &error) < 0) {
+        if (pa_simple_read(pulse, display.input, BUF_SIZE, &error) < 0) {
             fprintf(stderr, "Reading from Pulse failed: %s\n",
                     pa_strerror(error));
             goto finish;
         }
 
-        if (pthread_mutex_trylock(&display.worker_waiting) == EBUSY) {
-            /* Worker is waiting, update the input buffer */
-            memcpy(display.input, &buffer, BUF_SIZE);
-        }
-        else {
-            fprintf(stderr, "Skipping update...\n");
-        }
+        imon_update(&display);
 
-        /* Clear the above lock or signal the worker to start */
-        pthread_mutex_unlock(&display.worker_waiting);
+        if (display.worker_done)
+            goto finish;
     }
 
     ret = 0;
