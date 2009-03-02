@@ -20,7 +20,6 @@
 #define BUF_SAMPLES 4096
 #define BUF_SIZE    (sizeof(float) * BUF_SAMPLES)
 #define BAR_COUNT   16
-#define BAR_MAX     6 // An arbitrary number...
 
 /* This is the frequency range for each graph bar, by fft output index.
  * The actual frequency represented is about 20 times greater. These
@@ -93,7 +92,7 @@ static void imon_free(struct imon_display *display)
 
 static void imon_update_bar(struct imon_display *display,
         float level, int bar) {
-    int i = (int)((logf(level)/BAR_MAX) * 16);
+    int i = (int)((logf(level)/7) * 16);
 
     if (i < 0)
         i = 0;
