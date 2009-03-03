@@ -26,10 +26,10 @@
  * were computed with:
  * for (i = 0; i <= 16; i++)
  *     round(1.54221083^i) */
-const int BAR_RANGE[] =
+static const int BAR_RANGE[] =
     {1, 2, 3, 4, 6, 9, 13, 21, 32, 49, 76, 117, 181, 279, 431, 664, 1024};
 
-const char BAR_CHARS[2][16] = {
+static const char BAR_CHARS[2][16] = {
     {' ',' ',' ',' ',' ',' ',' ',' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7},
     {0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7}};
 
@@ -103,7 +103,7 @@ static void imon_update_bar(struct imon_display *display,
     display->lcd_buffer[!!display->lcd_flip][1][bar] = BAR_CHARS[1][i];
 }
 
-void imon_update(struct imon_display *display)
+static void imon_update(struct imon_display *display)
 {
     /* Apply a Hamming window to focus on the center of this data set */
     for (int i = 0; i < BUF_SAMPLES; i++)
@@ -140,7 +140,7 @@ void imon_update(struct imon_display *display)
 
 }
 
-void* imon_worker(void *data)
+static void* imon_worker(void *data)
 {
     struct imon_display *display = data;
 
