@@ -3,12 +3,13 @@
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
+#include <signal.h>
 #include <errno.h>
 #include <math.h>
-#include <pthread.h>
-
-#include <pulse/pulseaudio.h>
 #include <fftw3.h>
+#include <pulse/pulseaudio.h>
+
+#include "monitor.h"
 
 //#define VERBOSE
 
@@ -35,16 +36,6 @@ static const char BAR_CHARS[2][16] = {
 /* TODO: auto-detect this */
 #define PULSE_DEV \
     "alsa_output.pci_8086_3a3e_sound_card_0_alsa_playback_0.monitor"
-#define IMON_DEV "/dev/lcd0"
-
-/* imon worker thread control */
-static pthread_mutex_t worker_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t worker_waiting = PTHREAD_COND_INITIALIZER;
-static int worker_done, worker_error, worker_trigger;
-
-/* imon frame buffer and device */
-static char lcd_buffer[2][2][BAR_COUNT];
-static int lcd_fd, lcd_flip;
 
 /* fft buffers */
 static float *input;
@@ -62,68 +53,7 @@ struct volume {
     int mute;
 };
 
-static void* imon_worker(void *nill)
-{
-    char write_buffer[2][BAR_COUNT];
-
-    while (1) {
-        pthread_mutex_lock(&worker_lock);
-
-        if (!worker_trigger)
-            pthread_cond_wait(&worker_waiting, &worker_lock);
-
-        worker_trigger = 0;
-
-        if (worker_done)
-            break;
-
-        memcpy(write_buffer, lcd_buffer[!lcd_flip], sizeof(write_buffer));
-        pthread_mutex_unlock(&worker_lock);
-
-        if (write(lcd_fd, write_buffer, sizeof(write_buffer)) < 0) {
-            fprintf(stderr, "LCD update failed: %s\n", strerror(errno));
-            pthread_mutex_lock(&worker_lock);
-            worker_error = 1;
-            worker_done = 1;
-            break;
-        }
-
-    }
-
-    pthread_mutex_unlock(&worker_lock);
-    return NULL;
-}
-
-static void imon_worker_stop()
-{
-    pthread_mutex_lock(&worker_lock);
-
-    if (!worker_done) {
-        worker_done = 1;
-        pthread_cond_signal(&worker_waiting);
-    }
-
-    pthread_mutex_unlock(&worker_lock);
-}
-
-static void imon_worker_trigger(int force)
-{
-    pthread_mutex_lock(&worker_lock);
-
-    if (!worker_trigger || force) {
-        worker_trigger = 1;
-        lcd_flip = !lcd_flip;
-        pthread_cond_signal(&worker_waiting);
-    }
-#ifdef VERBOSE
-    else
-        fprintf(stderr, "Skipping update...\n");
-#endif
-
-    pthread_mutex_unlock(&worker_lock);
-}
-
-static int imon_init()
+static void display_init()
 {
 
     /* fftw_malloc ensures that the buffers are properly aligned for SSE */
@@ -135,44 +65,19 @@ static int imon_init()
     plan = fftwf_plan_r2r_1d(BUF_SAMPLES,
             input, output,
             FFTW_R2HC, FFTW_MEASURE);
-
-    memset(lcd_buffer, ' ', sizeof(lcd_buffer));
-
-    if ((lcd_fd = open(IMON_DEV, O_WRONLY|O_NONBLOCK)) < 0) {
-        fprintf(stderr, "LCD init failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    return 0;
 }
 
-static void imon_free()
+static void display_free()
 {
-    pthread_mutex_destroy(&worker_lock);
-    pthread_cond_destroy(&worker_waiting);
-
     fftwf_destroy_plan(plan);
     fftwf_free(input);
     fftwf_free(output);
-
-    if (lcd_fd)
-        close(lcd_fd);
 }
 
-static void imon_update_bar(float level, int bar) {
-    int i = (int)((logf(level)/7) * 16);
-
-    if (i < 0)
-        i = 0;
-    else if (i >= 16)
-        i = 15;
-
-    lcd_buffer[lcd_flip][0][bar] = BAR_CHARS[0][i];
-    lcd_buffer[lcd_flip][1][bar] = BAR_CHARS[1][i];
-}
-
-static void imon_update()
+static void display_update()
 {
+    char display[2][BAR_COUNT];
+
     /* Apply a Hamming window to focus on the center of this data set */
     for (int i = 0; i < BUF_SAMPLES; i++)
         input[i] *= (0.54 - 0.46 * cosf((2*M_PI*i)/BUF_SAMPLES));
@@ -181,6 +86,7 @@ static void imon_update()
 
     for (int i = 0; i < BAR_COUNT; i++) {
         float max = 0;
+        int level;
 
         for (int j = BAR_RANGE[i]; j < BAR_RANGE[i+1]; j++) {
             float mag = sqrt(pow(output[j],2) +
@@ -189,10 +95,18 @@ static void imon_update()
                 max = mag;
         }
 
-        imon_update_bar(max, i);
+        /* Scale to a level between 0 and 15 */
+        level = (int)((logf(max)/7) * 15);
+        if (level < 0)
+            level = 0;
+        else if (level > 15)
+            level = 15;
+
+        display[0][i] = BAR_CHARS[0][level];
+        display[1][i] = BAR_CHARS[1][level];
     }
 
-    imon_worker_trigger(0);
+    imon_write(display, sizeof(display));
 }
 
 static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
@@ -201,10 +115,6 @@ static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
     static int saved_length = 0;
     const void *buffer;
     int index = 0;
-
-    /* Abort if the worker thread stopped already */
-    if (worker_done)
-        mainloop_api->quit(mainloop_api, 1);
 
     assert(length > 0);
 
@@ -225,7 +135,7 @@ static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
                         buffer + index, BUF_SIZE - saved_length);
                 index += BUF_SIZE - saved_length;
                 saved_length = 0;
-                imon_update();
+                display_update();
             }
             else {
                 memcpy(saved+saved_length, buffer + index, length - index);
@@ -237,7 +147,7 @@ static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
             if (length - index >= BUF_SIZE) {
                 memcpy(input, buffer + index, BUF_SIZE);
                 index += BUF_SIZE;
-                imon_update();
+                display_update();
             }
             else {
                 memcpy(saved, buffer + index, length - index);
@@ -270,8 +180,7 @@ static void pulse_stream_change(pa_stream *s, void *nill)
 static void pulse_clear_volume(pa_mainloop_api *a, pa_time_event *e,
         const struct timeval *tv, void *nill)
 {
-    memset(lcd_buffer[lcd_flip], ' ', sizeof(lcd_buffer[0]));
-    imon_worker_trigger(1);
+    imon_clear();
 
     mainloop_api->time_free(volume_timeout);
     volume_timeout = NULL;
@@ -280,34 +189,29 @@ static void pulse_clear_volume(pa_mainloop_api *a, pa_time_event *e,
 
 static void pulse_show_volume(pa_stream *s, int success, void *data)
 {
-    const char mute[] = "Muted";
     struct volume *volume = data;
-    char volbuf[BAR_COUNT+1];
+    char display[2][BAR_COUNT];
     int len, level, scaled;
     struct timeval tv;
 
     scaled = (volume->value * 100) / PA_VOLUME_NORM;
     level = ((float)volume->value / PA_VOLUME_NORM) * BAR_COUNT;
 
-    if (!volume->mute) {
-        len = snprintf(volbuf, sizeof(volbuf), "Volume: %d%%", scaled);
-        memcpy(lcd_buffer[lcd_flip][0], volbuf, len);
-        memset(lcd_buffer[lcd_flip][0]+len, ' ', BAR_COUNT-len);
-    }
-    else {
-        len = strlen(mute);
-        memcpy(lcd_buffer[lcd_flip][0], mute, len);
-        memset(lcd_buffer[lcd_flip][0]+len, ' ', BAR_COUNT-len);
-    }
+    if (!volume->mute)
+        len = snprintf(display[0], BAR_COUNT - 1, "Volume: %d%%", scaled);
+    else
+        len = snprintf(display[0], BAR_COUNT - 1, "Muted");
+
+    memset(display[0]+len, ' ', BAR_COUNT-len);
 
     for (int i = 0; i < BAR_COUNT; i++) {
         if (i < level)
-            lcd_buffer[lcd_flip][1][i] = i/2;
+            display[1][i] = i/2;
         else
-            lcd_buffer[lcd_flip][1][i] = ' ';
+            display[1][i] = ' ';
     }
 
-    imon_worker_trigger(1);
+    imon_write(display, sizeof(display));
 
     pa_gettimeofday(&tv);
     pa_timeval_add(&tv, 3000000);
@@ -392,25 +296,27 @@ static void pulse_context_chage(pa_context *c, void *nill)
     }
 }
 
+static void signal_exit(pa_mainloop_api *api, pa_signal_event *e,
+        int sig, void *nill) {
+    api->quit(api, 0);
+}
+
 int main(int argc, char * argv[])
 {
-    pthread_t worker;
     pa_mainloop *mainloop = NULL;
     int r, ret = 1;
 
-    if (imon_init())
-        goto finish;
-
-    /* Start up the worker thread */
-    if ((r = pthread_create(&worker, NULL, imon_worker, NULL))) {
-        fprintf(stderr, "thread create failed: %s\n", strerror(r));
-        goto finish;
-    }
+    display_init();
 
     /* Start up the PulseAudio connection */
     mainloop = pa_mainloop_new();
     assert(mainloop);
     mainloop_api = pa_mainloop_get_api(mainloop);
+
+    /* Register some signal handlers */
+    pa_signal_init(mainloop_api);
+    pa_signal_new(SIGINT, signal_exit, NULL);
+    pa_signal_new(SIGTERM, signal_exit, NULL);
 
     context = pa_context_new(mainloop_api, argv[0]);
     assert(context);
@@ -423,24 +329,23 @@ int main(int argc, char * argv[])
         goto finish;
     }
 
+    if ((r = imon_open(mainloop_api))) {
+        fprintf(stderr, "Failed to open iMON display: %s\n", strerror(r));
+        goto finish;
+    }
+
     pa_mainloop_run(mainloop, &ret);
+    imon_close(mainloop_api);
 
 finish:
-    imon_worker_stop();
-    pthread_join(worker, NULL);
-
     if (stream)
         pa_stream_unref(stream);
 
-    if (context)
-        pa_context_unref(context);
+    pa_signal_done();
+    pa_context_unref(context);
+    pa_mainloop_free(mainloop);
 
-    if (mainloop) {
-        pa_signal_done();
-        pa_mainloop_free(mainloop);
-    }
-
-    imon_free();
+    display_free();
 
     return ret;
 }
