@@ -116,9 +116,16 @@ void imon_close(pa_mainloop_api *api)
 
 static void imon_write_cb(struct libusb_transfer *tx_info)
 {
+    /* This randomly fails, but I don't know if there is any
+     * proper way to really recover from it...
+     * At this point all the packets have already been sent
+     * so it's not like I can abort the rest of the write.
+     * So we'll silently ignore this for now and see what
+     * problems that causes...
     if (tx_info->status != LIBUSB_TRANSFER_COMPLETED) {
         assert(0);
     }
+    */
 
     /* release lock if this was the last packet in a set */
     if (tx_info->user_data) {
