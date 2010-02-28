@@ -1,0 +1,4 @@
+A simple spectrum analyzer for PulseAudio iMon LCD displays.
+Licensed under the GPLv2.
+
+Requries pulseaduio, libusb 1.0, libfftw 3.x

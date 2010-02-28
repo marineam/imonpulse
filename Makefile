@@ -9,13 +9,16 @@ LIBS += $(shell pkg-config libpulse --libs)
 LIBS += $(shell pkg-config libusb-1.0 --libs)
 HEADERS = monitor.h
 
-all: monitor
+all: imonpulse
 
 %.o: %.c Makefile $(HEADERS)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
-monitor: imon.o pulse.o
+imonpulse: imon.o pulse.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
+install: imonpulse
+	install imonpulse /usr/local/bin
+
 clean:
-	$(RM) *.o monitor
+	$(RM) *.o imonpulse
