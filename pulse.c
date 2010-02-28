@@ -34,7 +34,7 @@ static const char BAR_CHARS[2][16] = {
     {0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7}};
 
 /* TODO: auto-detect this */
-#define PULSE_DEV "alsa_output.hw_0_0.monitor"
+#define PULSE_DEV "alsa_output.pci-0000_00_1b.0.analog-stereo.monitor"
 
 /* fft buffers */
 static float *input;
