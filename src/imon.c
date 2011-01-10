@@ -181,7 +181,9 @@ void imon_write(const void *data, int length)
         /* Write with a timeout of 0.1 second */
         libusb_fill_interrupt_transfer(tx_info, handle, endpoint,
                 tx_buf, 8, imon_write_cb, (void*)!!(i == 5), 100);
-        tx_info->flags = LIBUSB_TRANSFER_SHORT_NOT_OK;
+        tx_info->flags = LIBUSB_TRANSFER_SHORT_NOT_OK |
+                         LIBUSB_TRANSFER_FREE_BUFFER |
+                         LIBUSB_TRANSFER_FREE_TRANSFER;
         r = libusb_submit_transfer(tx_info);
         assert(r == 0);
     }
