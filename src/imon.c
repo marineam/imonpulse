@@ -19,7 +19,7 @@ static sem_t lock;
 static libusb_context *context;
 static libusb_device_handle *handle;
 static uint8_t interface, endpoint;
-//static pa_io_event **pollio;
+static pa_io_event **pollio;
 
 static void imon_handle_events(pa_mainloop_api *api, pa_io_event *e,
         int fd, pa_io_event_flags_t events, void *nill)
@@ -35,7 +35,7 @@ int imon_open(pa_mainloop_api *api)
     struct libusb_config_descriptor *config;
     struct libusb_interface_descriptor *altsetting;
     const struct libusb_pollfd **pollfds;
-    int i, r;
+    int r;
 
     sem_init(&lock, 0, LOCK_MAX);
 
@@ -73,18 +73,24 @@ int imon_open(pa_mainloop_api *api)
 
     /* Register libusb into the pulse eventloop */
     pollfds = libusb_get_pollfds(context);
-    for (i = 0; pollfds[i]; i++) {
+    for (int i = 0; ; i++) {
         int flags = 0;
-        //pollio = realloc(pollio, sizeof(void*) * i);
+
+        pollio = realloc(pollio, sizeof(void*) * (i+1));
+        if (pollfds[i] == NULL) {
+            pollio[i] = NULL;
+            break;
+        }
+
         if (pollfds[i]->events & POLLIN)
             flags |= PA_IO_EVENT_INPUT;
         if (pollfds[i]->events & POLLOUT)
             flags |= PA_IO_EVENT_OUTPUT;
-        //pollio[i] = api->io_new(api, pollfds[i]->fd, flags,
-        api->io_new(api, pollfds[i]->fd, flags,
+        pollio[i] = api->io_new(api, pollfds[i]->fd, flags,
                 imon_handle_events, NULL);
     }
-    //pollio[i] = NULL;
+
+    free(pollfds);
 
     return r == 0 ? 0 : -1;
 }
@@ -93,10 +99,10 @@ void imon_close(pa_mainloop_api *api)
 {
     int lock_val;
 
-    /*for (int i = 0; pollio[i]; i++) {
+    for (int i = 0; pollio[i]; i++) {
         api->io_free(pollio[i]);
     }
-    free(pollio);*/
+    free(pollio);
 
     /* Wait for a slot to open */
     while (sem_trywait(&lock))
