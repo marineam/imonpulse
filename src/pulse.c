@@ -11,7 +11,10 @@
 
 #include "monitor.h"
 
-//#define VERBOSE
+/* Alias this because it is used constantly */
+#define pao(o) pa_operation_unref(o)
+
+#define APPLICATION_NAME "iMonPulse"
 
 /* This buffer should give us about 10 data sets per second
  * and thus a minimum frequency of about 10 Hz. The maximum
@@ -42,7 +45,7 @@ static float *output;
 static fftwf_plan plan;
 
 /* Pulse connection information */
-static pa_mainloop_api *mainloop_api;
+static pa_mainloop_api *api;
 static pa_context *context;
 static pa_stream *stream;
 static pa_time_event *volume_timeout;
@@ -51,6 +54,8 @@ struct volume {
     pa_volume_t value;
     int mute;
 };
+
+static int context_setup();
 
 static void display_init()
 {
@@ -108,7 +113,7 @@ static void display_update()
     imon_write(display, sizeof(display));
 }
 
-static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
+static void stream_read(pa_stream *s, size_t length, void *nill)
 {
     static uint8_t saved[BUF_SIZE];
     static int saved_length = 0;
@@ -120,7 +125,7 @@ static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
     if (pa_stream_peek(s, &buffer, &length) < 0) {
         fprintf(stderr, "Stream read failure: %s\n",
                 pa_strerror(pa_context_errno(context)));
-        mainloop_api->quit(mainloop_api, 1);
+        api->quit(api, 1);
     }
 
     assert(length > 0);
@@ -159,7 +164,7 @@ static void pulse_stream_read(pa_stream *s, size_t length, void *nill)
     pa_stream_drop(s);
 }
 
-static void pulse_stream_change(pa_stream *s, void *nill)
+static void stream_change(pa_stream *s, void *nill)
 {
     switch (pa_stream_get_state(s)) {
         case PA_STREAM_CREATING:
@@ -171,22 +176,22 @@ static void pulse_stream_change(pa_stream *s, void *nill)
         case PA_STREAM_FAILED:
             fprintf(stderr, "Stream failure: %s\n",
                     pa_strerror(pa_context_errno(context)));
-            mainloop_api->quit(mainloop_api, 1);
+            api->quit(api, 1);
             break;
     }
 }
 
-static void pulse_clear_volume(pa_mainloop_api *a, pa_time_event *e,
+static void clear_volume(pa_mainloop_api *a, pa_time_event *e,
         const struct timeval *tv, void *nill)
 {
     imon_clear();
 
-    mainloop_api->time_free(volume_timeout);
+    api->time_free(volume_timeout);
     volume_timeout = NULL;
-    pa_operation_unref(pa_stream_cork(stream, 0, NULL, NULL));
+    pao(pa_stream_cork(stream, 0, NULL, NULL));
 }
 
-static void pulse_show_volume(pa_stream *s, int success, void *data)
+static void show_volume(pa_stream *s, int success, void *data)
 {
     struct volume *volume = data;
     char display[2][BAR_COUNT];
@@ -216,15 +221,14 @@ static void pulse_show_volume(pa_stream *s, int success, void *data)
     pa_timeval_add(&tv, 3000000);
 
     if (!volume_timeout) {
-        volume_timeout = mainloop_api->time_new(mainloop_api,
-                &tv, pulse_clear_volume, NULL);
+        volume_timeout = api->time_new(api, &tv, clear_volume, NULL);
     }
     else {
-        mainloop_api->time_restart(volume_timeout, &tv);
+        api->time_restart(volume_timeout, &tv);
     }
 }
 
-static void pulse_check_volume(pa_context *c,
+static void check_volume(pa_context *c,
         const pa_sink_info *i, int eol, void *nill)
 {
     static struct volume volume = {0, 0};
@@ -240,22 +244,20 @@ static void pulse_check_volume(pa_context *c,
     assert(new);
     memcpy(new, &volume, sizeof(volume));
 
-    pa_operation_unref(pa_stream_cork(stream, 1, pulse_show_volume, new));
+    pao(pa_stream_cork(stream, 1, show_volume, new));
 }
 
-static void pulse_context_event(pa_context *c,
+static void context_event(pa_context *c,
         pa_subscription_event_type_t t, uint32_t idx, void *nill)
 {
     // TODO: don't hard code the card number
     if (idx != 0 || t != PA_SUBSCRIPTION_EVENT_CHANGE)
         return;
 
-    pa_operation_unref(
-            pa_context_get_sink_info_by_index(
-                c, idx, pulse_check_volume, NULL));
+    pao(pa_context_get_sink_info_by_index(c, idx, check_volume, NULL));
 }
 
-static void pulse_context_chage(pa_context *c, void *nill)
+static void context_change(pa_context *c, void *nill)
 {
     pa_sample_spec spec;
 
@@ -264,6 +266,7 @@ static void pulse_context_chage(pa_context *c, void *nill)
         case PA_CONTEXT_AUTHORIZING:
         case PA_CONTEXT_UNCONNECTED:
         case PA_CONTEXT_SETTING_NAME:
+        case PA_CONTEXT_TERMINATED:
             break;
 
         case PA_CONTEXT_READY:
@@ -274,29 +277,55 @@ static void pulse_context_chage(pa_context *c, void *nill)
             spec.rate = SAMPLE_RATE;
 
             stream = pa_stream_new(c, "monitor", &spec, NULL);
-            pa_stream_set_state_callback(stream, pulse_stream_change, NULL);
-            pa_stream_set_read_callback(stream, pulse_stream_read, NULL);
+            pa_stream_set_state_callback(stream, stream_change, NULL);
+            pa_stream_set_read_callback(stream, stream_read, NULL);
             pa_stream_connect_record(stream, PULSE_DEV, NULL, 0);
 
-            pa_operation_unref(pa_context_subscribe(c,
-                        PA_SUBSCRIPTION_MASK_SINK, NULL, NULL));
+            pao(pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK, NULL, NULL));
 
-            break;
-
-        case PA_CONTEXT_TERMINATED:
-            mainloop_api->quit(mainloop_api, 0);
             break;
 
         case PA_CONTEXT_FAILED:
             fprintf(stderr, "Connection failure: %s\n",
                     pa_strerror(pa_context_errno(c)));
-            mainloop_api->quit(mainloop_api, 1);
+
+            /* Attempt to reconnect */
+            if (context != c || context_setup(c))
+                api->quit(api, 1);
             break;
     }
 }
 
+static int context_setup() {
+    time_t timeout = time(NULL) + 30;
+
+    if (context)
+        pa_context_unref(context);
+
+    context = pa_context_new(api, APPLICATION_NAME);
+    assert(context);
+
+    pa_context_set_state_callback(context, context_change, NULL);
+    pa_context_set_subscribe_callback(context, context_event, NULL);
+
+    do {
+        if (pa_context_connect(context, NULL, 0, NULL)) {
+            fprintf(stderr, "Connection failure: %s\n",
+                pa_strerror(pa_context_errno(context)));
+            sleep(1);
+        }
+        else
+            return 0;
+    } while (time(NULL) <= timeout);
+
+    pa_context_unref(context);
+    context = NULL;
+
+    return 1;
+}
+
 static void signal_exit(pa_mainloop_api *api, pa_signal_event *e,
-        int sig, void *nill) {
+        int sig, void *data) {
     api->quit(api, 0);
 }
 
@@ -310,39 +339,34 @@ int main(int argc, char * argv[])
     /* Start up the PulseAudio connection */
     mainloop = pa_mainloop_new();
     assert(mainloop);
-    mainloop_api = pa_mainloop_get_api(mainloop);
+    api = pa_mainloop_get_api(mainloop);
 
     /* Register some signal handlers */
-    pa_signal_init(mainloop_api);
+    pa_signal_init(api);
     pa_signal_new(SIGINT, signal_exit, NULL);
     pa_signal_new(SIGTERM, signal_exit, NULL);
 
-    context = pa_context_new(mainloop_api, argv[0]);
-    assert(context);
-    pa_context_set_state_callback(context, pulse_context_chage, NULL);
-    pa_context_set_subscribe_callback(context, pulse_context_event, NULL);
-
-    if (pa_context_connect(context, NULL, 0, NULL)) {
-        fprintf(stderr, "Connection failure: %s\n",
-                pa_strerror(pa_context_errno(context)));
+    if (context_setup())
         goto finish;
-    }
 
-    if ((r = imon_open(mainloop_api))) {
+    if ((r = imon_open(api))) {
         fprintf(stderr, "Failed to open iMON display: %s\n", strerror(r));
         goto finish;
     }
 
     pa_mainloop_run(mainloop, &ret);
-    imon_close(mainloop_api);
+    imon_close(api);
 
 finish:
     if (stream)
         pa_stream_unref(stream);
 
     pa_signal_done();
-    pa_context_unref(context);
+    if (context)
+        pa_context_disconnect(context);
+        pa_context_unref(context);
     pa_mainloop_free(mainloop);
+    api = NULL;
 
     display_free();
 
