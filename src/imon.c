@@ -111,7 +111,9 @@ void imon_close(pa_mainloop_api *api)
 
     libusb_release_interface(handle, interface);
     libusb_close(handle);
+    libusb_exit(context);
     handle = NULL;
+    context = NULL;
 }
 
 static void imon_write_cb(struct libusb_transfer *tx_info)
