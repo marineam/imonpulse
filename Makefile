@@ -21,7 +21,9 @@ imonpulse: $(OJB_FILES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 install: imonpulse
-	install imonpulse /usr/local/bin
+	install -m 755 imonpulse /usr/local/bin
+	install -m 644 60-imonpulse.rules /etc/udev/rules.d
+	install -m 644 imonpulse.service /etc/systemd/system
 
 clean:
 	$(RM) $(OJB_FILES) imonpulse

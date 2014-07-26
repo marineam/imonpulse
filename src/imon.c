@@ -177,7 +177,7 @@ void imon_write(const void *data, int length)
     for (int i = 0; i < 6; i++) {
         struct libusb_transfer *tx_info = libusb_alloc_transfer(0);
         uint8_t *tx_buf = malloc(8);
-	void *user_data;
+        void *user_data;
         int r;
 
         assert(tx_info && tx_buf);
@@ -185,9 +185,9 @@ void imon_write(const void *data, int length)
         memcpy(tx_buf, buf+(i*7), 7);
         tx_buf[7] = i*2;
 
-	/* Since we only need one bit of information in the callback
-	 * use a pointer value of 0 for data, 1 for the end packet. */
-	user_data = (i == 5) ? (void*)1UL : NULL;
+        /* Since we only need one bit of information in the callback
+         * use a pointer value of 0 for data, 1 for the end packet. */
+        user_data = (i == 5) ? (void*)1UL : NULL;
 
         /* Write with a timeout of 0.1 second */
         libusb_fill_interrupt_transfer(tx_info, handle, endpoint,

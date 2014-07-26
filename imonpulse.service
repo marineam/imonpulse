@@ -1,0 +1,12 @@
+[Unit]
+Description=LCD Monitor for MPD
+Requires=mpd.service sys-subsystem-usb-devices-imonpulse.device
+After=mpd.service sys-subsystem-usb-devices-imonpulse.device
+
+[Service]
+User=mpd
+ExecStart=/usr/local/bin/imonpulse
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

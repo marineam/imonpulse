@@ -1,0 +1,2 @@
+# Give the imonpulse daemon, running as the mpd user, access to the device.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="15c2", ATTR{idProduct}=="ffdc", OWNER="mpd", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/subsystem/usb/devices/imonpulse"
