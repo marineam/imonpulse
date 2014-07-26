@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <math.h>
+#include <time.h>
 #include <fftw3.h>
 #include <pulse/pulseaudio.h>
 
