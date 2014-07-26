@@ -3,7 +3,7 @@ CFLAGS  = -g -Wall -O2 -std=gnu99 -Isrc
 CFLAGS += $(shell pkg-config fftw3f --cflags)
 CFLAGS += $(shell pkg-config libpulse --cflags)
 CFLAGS += $(shell pkg-config libusb-1.0 --cflags)
-LIBS  = -lrt
+LIBS  = -lrt -lm -pthread
 LIBS += $(shell pkg-config fftw3f --libs)
 LIBS += $(shell pkg-config libpulse --libs)
 LIBS += $(shell pkg-config libusb-1.0 --libs)
