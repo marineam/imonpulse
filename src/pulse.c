@@ -17,21 +17,27 @@
 
 #define APPLICATION_NAME "iMonPulse"
 
-/* This buffer should give us about 10 data sets per second
- * and thus a minimum frequency of about 10 Hz. The maximum
- * frequency is half the sample rate or about 22 kHz */
+/* The iMon display doesn't respond too quickly, so we are using
+ * 10 data sets per second, for a fundamental frequency of 10Hz.
+ * The maximum frequency is half the sample rate, or 22.05kHz
+ * for the standard CD sample rate of 44.1kHz. */
 #define SAMPLE_RATE 44100
-#define BUF_SAMPLES 4096
+#define BUF_SAMPLES 4410
 #define BUF_SIZE    (sizeof(float) * BUF_SAMPLES)
 #define BAR_COUNT   16
 
-/* This is the frequency range for each graph bar, by fft output index.
- * The actual frequency represented is about 20 times greater. These
- * were computed with:
- * for (i = 0; i <= 16; i++)
- *     round(1.54221083^i) */
-static const int BAR_RANGE[] =
-    {1, 2, 3, 4, 6, 9, 13, 21, 32, 49, 76, 117, 181, 279, 431, 664, 1024};
+/* Max range for each bar, by fft output index. The true frequency
+ * is the index multiplied by the fundamental frequency. The range of
+ * frequencies are split up between the bars on a logarithmic scale.
+ * Index 0 (the DC) is skipped since we just want frequency info.
+ *   MAX = (44100kHz / 2) / 10Hz = 2205
+ *   BASE = 2205^(1/16) = 1.6179423283987682
+ * So the indexes are computed by:
+ *   for (i = 0; i <= 16; i++)
+ *      BAR_RANGE[i] = round(BASE^i)
+ */
+static const int BAR_RANGE[BAR_COUNT+1] =
+    {1, 2, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322, 521, 842, 1363, 2205};
 
 static const char BAR_CHARS[2][16] = {
     {' ',' ',' ',' ',' ',' ',' ',' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7},
