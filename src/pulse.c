@@ -39,9 +39,9 @@
 static const int BAR_RANGE[BAR_COUNT+1] =
     {1, 2, 3, 4, 7, 11, 18, 29, 47, 76, 123, 199, 322, 521, 842, 1363, 2205};
 
-static const char BAR_CHARS[2][16] = {
-    {' ',' ',' ',' ',' ',' ',' ',' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7},
-    {0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7}};
+static const char BAR_CHARS[2][17] = {
+    {' ',' ',' ',' ',' ',' ',' ',' ',' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7},
+    {' ',0x0,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7,0x7}};
 
 /* TODO: auto-detect this */
 #define PULSE_DEV "alsa_output.pci-0000_00_1b.0.analog-stereo.monitor"
@@ -105,12 +105,13 @@ static void display_update()
                 max = mag;
         }
 
-        /* Scale to a level between 0 and 15 */
-        level = (int)((logf(max)/7) * 15);
+        /* Scale to a level between 0 and 16...
+         * The 2.5 value is pretty arbitrary, just picked what looked ok. */
+        level = (int)(logf(max) * 2.5);
         if (level < 0)
             level = 0;
-        else if (level > 15)
-            level = 15;
+        else if (level > 16)
+            level = 16;
 
         display[0][i] = BAR_CHARS[0][level];
         display[1][i] = BAR_CHARS[1][level];
