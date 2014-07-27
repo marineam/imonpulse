@@ -94,8 +94,7 @@ static void display_update()
         int level;
 
         for (int j = BAR_RANGE[i]; j < BAR_RANGE[i+1]; j++) {
-            float mag = sqrt(pow(output[j],2) +
-                    pow(output[BUF_SAMPLES-j],2));
+            float mag = hypotf(output[j], output[BUF_SAMPLES-j]);
             if (mag > max)
                 max = mag;
         }
