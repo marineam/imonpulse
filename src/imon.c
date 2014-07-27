@@ -130,10 +130,11 @@ static void imon_write_cb(struct libusb_transfer *tx_info)
      * so it's not like I can abort the rest of the write.
      * So we'll silently ignore this for now and see what
      * problems that causes...
+     */
     if (tx_info->status != LIBUSB_TRANSFER_COMPLETED) {
-        assert(0);
+        fprintf(stderr, "USB interrupt transfer failed: %s\n",
+                        libusb_error_name(tx_info->status));
     }
-    */
 
     /* release lock if this was the last packet in a set */
     if (tx_info->user_data) {
